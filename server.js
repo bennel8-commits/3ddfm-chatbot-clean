@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
+import nodemailer from "nodemailer";
 
 const app = express();
 app.use(cors());
@@ -9,6 +10,14 @@ app.use(bodyParser.json());
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
+});
+
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.ALERT_EMAIL_USER,
+    pass: process.env.ALERT_EMAIL_PASS
+  }
 });
 
 // 🔥 YOUR SYSTEM PROMPT
@@ -152,12 +161,51 @@ TONE:
 GOAL:
 
 Act as a knowledgeable sales engineer who helps the right clients move forward, while maintaining a premium and expert positioning.
-
 `;
+
+function isEmailLike(text) {
+  return text.includes("@") && text.includes(".");
+}
+
+async function sendLeadEmail(message, history) {
+  const subject = "New 3D DFM chatbot lead";
+
+  const conversation = (history || [])
+    .map((m) => `${m.role}: ${m.content}`)
+    .join("\n");
+
+  const text = `
+New lead from chatbot
+
+Contact details:
+${message}
+
+Conversation:
+${conversation}
+  `;
+
+  await transporter.sendMail({
+    from: process.env.ALERT_EMAIL_USER,
+    to: process.env.LEAD_NOTIFY_TO,
+    subject,
+    text
+  });
+}
 
 app.post("/chat", async (req, res) => {
   try {
     const { message, history } = req.body;
+
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ reply: "Invalid message." });
+    }
+
+    if (isEmailLike(message)) {
+      await sendLeadEmail(message, history || []);
+      return res.json({
+        reply: "Thanks, I've received your details. Ben will be in touch."
+      });
+    }
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
@@ -167,7 +215,7 @@ app.post("/chat", async (req, res) => {
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: messages,
+      messages,
       temperature: 0.4
     });
 
@@ -176,10 +224,11 @@ app.post("/chat", async (req, res) => {
     res.json({
       reply: reply.content
     });
-
   } catch (error) {
-    console.error(error);
-    res.status(500).send("Error processing request");
+    console.error("Server error:", error);
+    res.status(500).json({
+      reply: "There was an issue processing your request. Please try again."
+    });
   }
 });
 
